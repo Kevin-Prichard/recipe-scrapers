@@ -1,4 +1,3 @@
--e .
 beautifulsoup4>=4.6.0
 black>=21.4b2
 coverage>=4.5.1

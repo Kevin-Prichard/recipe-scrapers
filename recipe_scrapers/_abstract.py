@@ -1,4 +1,5 @@
 import inspect
+import typing as t
 from collections import OrderedDict
 from typing import Optional, Tuple, Union
 from urllib.parse import urljoin
@@ -134,3 +135,9 @@ class AbstractScraper:
     def site_name(self):
         meta = self.soup.find("meta", property="og:site_name")
         return meta.get("content") if meta else None
+
+    @staticmethod
+    def site_iterator(
+        can_fetch: t.Callable[[t.AnyStr], bool] = None
+    ) -> t.Iterator[t.AnyStr]:
+        raise NotImplementedError("This should be implemented.")

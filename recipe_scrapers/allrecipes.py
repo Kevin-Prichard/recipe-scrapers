@@ -1,7 +1,14 @@
-from ._abstract import AbstractScraper
 import inspect
 import logging
+import multiprocessing.dummy as mp
 import re
+import typing as t
+
+import numpy as np
+
+from ._abstract import AbstractScraper
+
+# import requests
 
 
 logging.basicConfig()
@@ -10,12 +17,23 @@ logger = logging.getLogger(__name__)
 
 UNITIZERX = re.compile(r"^([0-9.]+)\s*([^0-9.]*)$")
 EXT_NUTRS_SEL = "section.recipe-nutrition.nutrition-section div.nutrition-row"
-EXT_NUTRS_CLASH = "Extended nutrient name clashes with basic nutrient:" \
-                  "%s = %s vs %s"
+EXT_NUTRS_CLASH = "Extended nutrient name clashes with basic nutrient:" "%s = %s vs %s"
 EXT_NUTR_PCT = "Got unit type from a percentage value: %s = %s (%s)"
-DICT_FIELDS = ['author', 'canonical_url', 'image', 'ingredients',
-               'instructions', 'language', 'links', 'ratings',
-               'site_name', 'title', 'total_time', 'url', 'yields']
+DICT_FIELDS = [
+    "author",
+    "canonical_url",
+    "image",
+    "ingredients",
+    "instructions",
+    "language",
+    "links",
+    "ratings",
+    "site_name",
+    "title",
+    "total_time",
+    "url",
+    "yields",
+]
 
 
 class AllRecipes(AbstractScraper):
@@ -67,11 +85,11 @@ class AllRecipes(AbstractScraper):
         for node in self.soup.select(EXT_NUTRS_SEL):
             tupl = list(node.stripped_strings)
             if len(tupl) >= 2:
-                name = tupl[0].strip(':')
+                name = tupl[0].strip(":")
                 ext_nutrs[name] = tupl[1]
                 if len(tupl) == 3:
-                    if '%' in tupl[2]:
-                        ext_nutrs[name + '%'] = tupl[2].strip(' %')
+                    if "%" in tupl[2]:
+                        ext_nutrs[name + "%"] = tupl[2].strip(" %")
                     else:
                         unhandled(node)
             else:
@@ -93,9 +111,9 @@ class AllRecipes(AbstractScraper):
         for name, value in self.nutrients().items():
             try:
                 new_value = UNITIZERX.match(value).groups()
-            except AttributeError as excep:
+            except AttributeError:
                 new_value = (value, None)
-            if name.endswith('%'):
+            if name.endswith("%"):
                 if new_value[1]:
                     logger.warn(EXT_NUTR_PCT, name, value, str(new_value[1]))
                 else:
@@ -103,7 +121,7 @@ class AllRecipes(AbstractScraper):
 
             # Special cases: transfer unit types found in name
             if not new_value[1]:
-                if 'calories' in name:
+                if "calories" in name:
                     new_value = (value, "calories")
             unitized[name] = (float(new_value[0]), new_value[1])
         return unitized
@@ -122,9 +140,66 @@ class AllRecipes(AbstractScraper):
             else:
                 logger.warn("Expected attrib not found: %s", attrib_name)
         if html:
-            obj['html'] = str(self.soup)
+            obj["html"] = str(self.soup)
         if unitized:
-            obj['nutrients'] = self.nutrients_unitized()
+            obj["nutrients"] = self.nutrients_unitized()
         else:
-            obj['nutrients'] = self.nutrients()
+            obj["nutrients"] = self.nutrients()
         return obj
+
+    @staticmethod
+    def site_iterator(
+        can_fetch: t.Callable[[t.AnyStr], bool] = None,
+        lower_bound: int = 0,
+        upper_bound: int = 100,
+    ) -> t.Iterator[t.AnyStr]:
+        uri_format = "https://www.allrecipes.com/recipe/%d"
+
+        def recipe_finder() -> t.Iterator[bool]:
+            def check_recipe(recipe_id):
+                # print("check_recipe: %s" % str(recipe_id))
+                try:
+                    uri = uri_format % recipe_id
+                    # if can_fetch and can_fetch(recipe_id):
+                    return uri
+                    # else:
+                    # return requests.head(uri_format % recipe_id)
+                except Exception as xxx:
+                    print(xxx)
+                return False
+
+            # Some borrowing: https://github.com/kaelynn-rose/RecipeEDA/pulse
+            # rand_recipe_ids = np.arange(6663, 283432)
+            rand_recipe_ids = np.arange(lower_bound, upper_bound)
+            print("Randomizing...")
+            # rand_recipe_ids = np.arange(6663, 7000)
+            np.random.shuffle(rand_recipe_ids)
+            with mp.Pool(4) as p:
+                url_set = p.imap_unordered(check_recipe, rand_recipe_ids)
+                # print("site_iterator.recipe_finder ... url_set = "+str(url_set))
+                try:
+                    while True:
+                        # print("site_iterator.recipe_finder ...")
+                        url = next(url_set)
+                        # print("site_iterator.recipe_finder: url ... "+str(url))
+                        yield url
+                except StopIteration:
+                    print("Done at site_iterator.recipe_finder StopIteration")
+                    return
+
+        def recipe_fetcher() -> t.Iterator[t.AnyStr]:
+            recipe_url_gen = recipe_finder()
+            while True:
+                # print("site_iterator.recipe_fetcher ...")
+                try:
+                    url = next(recipe_url_gen)
+                    # print("site_iterator.recipe_fetcher: url = "+str(url))
+                    yield url
+                except StopIteration:
+                    print("Done at site_iterator.recipe_fetcher StopIteration")
+                    return
+            # with mp.Pool(1) as p:
+            #     yield from p.imap_unordered(print, recipe_finder())
+            # yield from p.imap_unordered(requests.get, recipe_finder())
+
+        return recipe_fetcher()
