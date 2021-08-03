@@ -5,11 +5,10 @@ import re
 import typing as t
 
 import numpy as np
+import requests
+from requests.packages.urllib3.util import Url, parse_url
 
 from ._abstract import AbstractScraper
-
-# import requests
-
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
@@ -160,10 +159,22 @@ class AllRecipes(AbstractScraper):
                 # print("check_recipe: %s" % str(recipe_id))
                 try:
                     uri = uri_format % recipe_id
-                    # if can_fetch and can_fetch(recipe_id):
-                    return uri
+                    if can_fetch and can_fetch(recipe_id):
+                        r = requests.head(uri)
+                        if r.status_code == 301:
+                            redir_path = r.headers.get("Location")
+                            url = parse_url(uri)
+                            new_uri = Url(
+                                scheme=url.scheme, host=url.host, path=redir_path
+                            )
+                            print(f"HEAD yes: {uri} to {new_uri}")
+                            # print("\n".join(f"    {k}: {v}"
+                            #                 for k, v in r.headers.items()))
+                            return str(new_uri)
+                        else:
+                            print(f"HEAD NO: {r.status_code} - {uri}")
                     # else:
-                    # return requests.head(uri_format % recipe_id)
+                    #     print("URI in cache: ", uri)
                 except Exception as xxx:
                     print(xxx)
                 return False
@@ -175,8 +186,12 @@ class AllRecipes(AbstractScraper):
             # rand_recipe_ids = np.arange(6663, 7000)
             np.random.shuffle(rand_recipe_ids)
             with mp.Pool(4) as p:
-                url_set = p.imap_unordered(check_recipe, rand_recipe_ids)
-                # print("site_iterator.recipe_finder ... url_set = "+str(url_set))
+                # Run all recipe IDs X check_recipe()
+                yield from p.imap_unordered(check_recipe, rand_recipe_ids)
+                # url_set = p.imap_unordered(check_recipe, rand_recipe_ids)
+                # print("site_iterator.recipe_finder..url_set = "+str(url_set))
+
+                """
                 try:
                     while True:
                         # print("site_iterator.recipe_finder ...")
@@ -186,8 +201,12 @@ class AllRecipes(AbstractScraper):
                 except StopIteration:
                     print("Done at site_iterator.recipe_finder StopIteration")
                     return
+                """
 
         def recipe_fetcher() -> t.Iterator[t.AnyStr]:
+            # Delegate results of URL creation and HEAD pulls
+            yield from recipe_finder()
+            """
             recipe_url_gen = recipe_finder()
             while True:
                 # print("site_iterator.recipe_fetcher ...")
@@ -198,6 +217,7 @@ class AllRecipes(AbstractScraper):
                 except StopIteration:
                     print("Done at site_iterator.recipe_fetcher StopIteration")
                     return
+            """
             # with mp.Pool(1) as p:
             #     yield from p.imap_unordered(print, recipe_finder())
             # yield from p.imap_unordered(requests.get, recipe_finder())
