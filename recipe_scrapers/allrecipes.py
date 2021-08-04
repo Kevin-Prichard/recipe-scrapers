@@ -2,10 +2,11 @@ import inspect
 import logging
 import multiprocessing.dummy as mp
 import re
-import typing as t
+from typing import AnyStr, Callable, Iterator
 
 import numpy as np
 import requests
+from requests.packages.urllib3.response import HTTPResponse
 from requests.packages.urllib3.util import Url, parse_url
 
 from ._abstract import AbstractScraper
@@ -30,7 +31,7 @@ DICT_FIELDS = [
     "site_name",
     "title",
     "total_time",
-    "url",
+    # "url",
     "yields",
 ]
 
@@ -130,14 +131,25 @@ class AllRecipes(AbstractScraper):
         for attrib_name in DICT_FIELDS:
             if skip_attribs and attrib_name in skip_attribs:
                 continue
-            attrib = getattr(self.__class__, attrib_name, None)
-            if attrib:
-                if inspect.isfunction(attrib) or inspect.ismethod(attrib):
-                    obj[attrib_name] = attrib(self)
+            try:
+                attrib = getattr(self.__class__, attrib_name, None)
+                if attrib:
+                    if inspect.isfunction(attrib) or inspect.ismethod(attrib):
+                        obj[attrib_name] = attrib(self)
+                    else:
+                        obj[attrib_name] = attrib
                 else:
-                    obj[attrib_name] = attrib
-            else:
-                logger.warn("Expected attrib not found: %s", attrib_name)
+                    logger.warn("Expected attrib not found: %s", attrib_name)
+            except Exception as excep:
+                logger.warning(
+                    "Unable to fetch attribute '%s' from %s (%s)",
+                    attrib_name,
+                    self.canonical_url(),
+                    excep.message,
+                )
+                # logger.warning("Unable to fetch attribute '%s' "
+                #                "from %s (%s", attrib_name,
+                #                self.canonical_url(), excep.message)
         if html:
             obj["html"] = str(self.soup)
         if unitized:
@@ -146,80 +158,64 @@ class AllRecipes(AbstractScraper):
             obj["nutrients"] = self.nutrients()
         return obj
 
-    @staticmethod
-    def site_iterator(
-        can_fetch: t.Callable[[t.AnyStr], bool] = None,
-        lower_bound: int = 0,
-        upper_bound: int = 100,
-    ) -> t.Iterator[t.AnyStr]:
-        uri_format = "https://www.allrecipes.com/recipe/%d"
+    URI_FORMAT = "https://www.allrecipes.com/recipe/%d"
 
-        def recipe_finder() -> t.Iterator[bool]:
-            def check_recipe(recipe_id):
-                # print("check_recipe: %s" % str(recipe_id))
-                try:
-                    uri = uri_format % recipe_id
-                    if can_fetch and can_fetch(recipe_id):
-                        r = requests.head(uri)
-                        if r.status_code == 301:
-                            redir_path = r.headers.get("Location")
-                            url = parse_url(uri)
-                            new_uri = Url(
-                                scheme=url.scheme, host=url.host, path=redir_path
-                            )
-                            print(f"HEAD yes: {uri} to {new_uri}")
-                            # print("\n".join(f"    {k}: {v}"
-                            #                 for k, v in r.headers.items()))
-                            return str(new_uri)
-                        else:
-                            print(f"HEAD NO: {r.status_code} - {uri}")
-                    # else:
-                    #     print("URI in cache: ", uri)
-                except Exception as xxx:
-                    print(xxx)
-                return False
+    @classmethod
+    def does_recipe_exist(
+        cls: AbstractScraper, uri: str, head_response: HTTPResponse = None
+    ):
+        if head_response is None:
+            head_response = requests.head(uri)
+        # For existing recipes, AllRecipes.com 301 redirects to complete uri
+        # Otherwise it returns 404
+        return head_response.status_code == 301
 
-            # Some borrowing: https://github.com/kaelynn-rose/RecipeEDA/pulse
-            # rand_recipe_ids = np.arange(6663, 283432)
-            rand_recipe_ids = np.arange(lower_bound, upper_bound)
-            print("Randomizing...")
-            # rand_recipe_ids = np.arange(6663, 7000)
-            np.random.shuffle(rand_recipe_ids)
-            with mp.Pool(4) as p:
-                # Run all recipe IDs X check_recipe()
-                yield from p.imap_unordered(check_recipe, rand_recipe_ids)
-                # url_set = p.imap_unordered(check_recipe, rand_recipe_ids)
-                # print("site_iterator.recipe_finder..url_set = "+str(url_set))
-
-                """
-                try:
-                    while True:
-                        # print("site_iterator.recipe_finder ...")
-                        url = next(url_set)
-                        # print("site_iterator.recipe_finder: url ... "+str(url))
-                        yield url
-                except StopIteration:
-                    print("Done at site_iterator.recipe_finder StopIteration")
-                    return
-                """
-
-        def recipe_fetcher() -> t.Iterator[t.AnyStr]:
-            # Delegate results of URL creation and HEAD pulls
-            yield from recipe_finder()
+    @classmethod
+    def site_url_generator(
+        cls: AbstractScraper,
+        exclude_recipe: Callable[[int, AnyStr], bool] = None,
+        check_recipe_threads: int = 4,
+    ) -> Iterator[AnyStr]:
+        def recipe_id_to_permalink(recipe_id: int):
             """
-            recipe_url_gen = recipe_finder()
-            while True:
-                # print("site_iterator.recipe_fetcher ...")
-                try:
-                    url = next(recipe_url_gen)
-                    # print("site_iterator.recipe_fetcher: url = "+str(url))
-                    yield url
-                except StopIteration:
-                    print("Done at site_iterator.recipe_fetcher StopIteration")
-                    return
+            recipe_id: int - allrecipes.com's public-facing ID
+            returns: urllib3.util.Url of existing recipes that can be GET
             """
-            # with mp.Pool(1) as p:
-            #     yield from p.imap_unordered(print, recipe_finder())
-            # yield from p.imap_unordered(requests.get, recipe_finder())
+            try:
+                # Does caller want to exclude this recipe, for whatever reason?
+                uri = cls.URI_FORMAT % recipe_id
+                if exclude_recipe and exclude_recipe(recipe_id, uri):
+                    return None
 
-        return recipe_fetcher()
+                # Is this recipe fetchable?
+                head_resp = requests.head(uri)
+                if cls.does_recipe_exist(uri, head_resp):
+                    redir_path = head_resp.headers.get("Location")
+                    url = parse_url(uri)
+                    permalink = Url(scheme=url.scheme, host=url.host, path=redir_path)
+                    print(f"HEAD yes: {uri} to {permalink}")
+                    return permalink
+                else:
+                    print(f"HEAD NO: {head_resp.status_code} - {uri}")
+            except Exception as xxx:
+                print(xxx)
+            return None
+
+        # AllRecipes.com's recipe IDs exist in a sparse matrix. We check HEAD
+        # to see whether a given ID exists. If true, we yield the permalink.
+        # If false, we yield None.
+        recipe_ids = np.arange(6500, 300000)
+        # recipe_ids = np.arange(6600, 6700)
+        np.random.shuffle(recipe_ids)
+        with mp.Pool(check_recipe_threads) as p:
+            # Run all recipe IDs X check_recipe()
+            permalink_gen = p.imap_unordered(recipe_id_to_permalink, recipe_ids)
+
+            try:
+                while True:
+                    permalink = next(permalink_gen)
+                    print("permalink ", permalink)
+                    if permalink is not None:
+                        yield permalink
+            except StopIteration:
+                return

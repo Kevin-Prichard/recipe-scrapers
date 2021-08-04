@@ -1,11 +1,11 @@
 import inspect
-import typing as t
 from collections import OrderedDict
-from typing import Optional, Tuple, Union
+from typing import AnyStr, Callable, Iterator, Optional, Tuple, Union
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+from requests.packages.urllib3.response import HTTPResponse
 
 from recipe_scrapers.settings import settings
 
@@ -136,8 +136,16 @@ class AbstractScraper:
         meta = self.soup.find("meta", property="og:site_name")
         return meta.get("content") if meta else None
 
-    @staticmethod
-    def site_iterator(
-        can_fetch: t.Callable[[t.AnyStr], bool] = None
-    ) -> t.Iterator[t.AnyStr]:
+    URI_FORMAT = None
+
+    @classmethod
+    def does_recipe_exist(cls, uri: str, head_response: HTTPResponse = None):
+        raise NotImplementedError("This should be implemented.")
+
+    @classmethod
+    def site_url_generator(
+        cls,
+        exclude_recipe: Callable[[int, AnyStr], bool] = None,
+        check_recipe_threads: int = 4,
+    ) -> Iterator[AnyStr]:
         raise NotImplementedError("This should be implemented.")
