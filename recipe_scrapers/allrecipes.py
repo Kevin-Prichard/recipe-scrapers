@@ -85,10 +85,16 @@ class AllRecipes(AbstractScraper):
             return None
 
     def nutrients(self):
+        return self._nutrients()
+
+    def _nutrients(self):
         def unhandled(n):
             logger.warn("Unhandled AllRecipes extended nutrient format: %d", n)
 
-        base_nutr = self.schema.nutrients()
+        try:
+            base_nutr = self.schema.nutrients()
+        except BaseException:
+            base_nutr = {}
 
         # Find extended nutrients
         ext_nutrs = {}
@@ -127,7 +133,7 @@ class AllRecipes(AbstractScraper):
 
     def nutrients_unitized(self):
         unitized = {}
-        for name, value in self.nutrients().items():
+        for name, value in self._nutrients().items():
             try:
                 new_value = UNITIZERX.match(value).groups()
             except AttributeError:
@@ -281,8 +287,8 @@ class AllRecipes(AbstractScraper):
         # to see whether a given ID exists. If true, we yield the permalink.
         # If false, we yield None.
         # recipe_ids = np.arange(8800, 300000)
-        # recipe_ids = np.arange(6662, 300000)
-        recipe_ids = np.arange(6662, 10000)
+        recipe_ids = np.arange(17500, 300000)
+        # recipe_ids = np.arange(6662, 10000)
         # recipe_ids = np.arange(6600, 6700)
         # np.random.shuffle(recipe_ids)
         with mp.Pool(recipe_check_threads) as p:
