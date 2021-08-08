@@ -14,9 +14,8 @@ from requests.packages.urllib3.util import Url, parse_url
 
 from ._abstract import AbstractScraper
 
-logging.basicConfig()
-logger = logging.getLogger(__name__)
-
+# https://stackoverflow.com/questions/13733552/logger-configuration-to-log-to-file-and-print-to-stdout
+logger = logging.getLogger()
 
 UNITIZERX = re.compile(r"^([0-9.]+)\s*([^0-9.]*)$")
 EXT_NUTRS_SEL = "section.recipe-nutrition.nutrition-section div.nutrition-row"
@@ -78,11 +77,16 @@ class AllRecipes(AbstractScraper):
     def instructions(self):
         return self.schema.instructions()
 
-    def ratings(self):
+    def _ratings(self):
         try:
-            return self.schema.ratings()
+            # Otherwise SchemaOrg raises exception for every unset ratings
+            if self.schema.data.get("aggregateRating", None):
+                return self.schema.ratings()
         except Exception:
             return None
+
+    def ratings(self):
+        return self._ratings()
 
     def nutrients(self):
         return self._nutrients()
@@ -148,7 +152,18 @@ class AllRecipes(AbstractScraper):
             if not new_value[1]:
                 if "calories" in name:
                     new_value = (value, "calories")
-            unitized[name] = (float(new_value[0]), new_value[1])
+            try:
+                unitized[name] = (float(new_value[0]), new_value[1])
+            except BaseException as eeNute:
+                logger.error(
+                    "Error in nutrients_unitized, improper float for "
+                    "field %s: %s, %s (orig: %s) - %s",
+                    name,
+                    new_value[0],
+                    new_value[1],
+                    value,
+                    eeNute,
+                )
         return unitized
 
     def to_dict(
@@ -161,7 +176,7 @@ class AllRecipes(AbstractScraper):
             "ingredients": self.schema.ingredients,
             "instructions": self.schema.instructions,
             "language": self.schema.language,
-            "ratings": self.ratings,
+            "ratings": self._ratings,
             "site_name": self.site_name,
             "title": self.schema.title,
             "total_time": self.schema.total_time,
@@ -173,7 +188,7 @@ class AllRecipes(AbstractScraper):
                 obj[field] = method()
             except BaseException as excep:
                 logger.warning(
-                    "Failed to get field %s on %s " "because: %s",
+                    "Failed to get field %s on %s because: %s",
                     field,
                     uri,
                     str(excep)[:255],
@@ -181,7 +196,10 @@ class AllRecipes(AbstractScraper):
         if html:
             obj["html"] = str(self.soup)
         if links:
-            obj["links"] = self.links()
+            try:
+                obj["links"] = self.links()
+            except Exception as eelinks:
+                logger.warning("Couldn't obtain links(): %s", str(eelinks))
         if unitized:
             obj["nutrients"] = self.nutrients_unitized()
         else:
@@ -275,12 +293,12 @@ class AllRecipes(AbstractScraper):
                     redir_path = head_resp.headers.get("Location")
                     url = parse_url(uri)
                     permalink = Url(scheme=url.scheme, host=url.host, path=redir_path)
-                    print(f"HEAD yes: {uri} to {permalink}")
+                    logger.info(f"HEAD yes: {uri} to {permalink}")
                     return permalink
                 # else:
                 #     print(f"HEAD NO: {head_resp.status_code} - {uri}")
             except Exception as xxx:
-                print(xxx)
+                logger.error("Exception in recipe_id_to_permalink: %s", xxx)
             return None
 
         # AllRecipes.com's recipe IDs exist in a sparse matrix. We check HEAD
