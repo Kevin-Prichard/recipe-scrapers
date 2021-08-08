@@ -11,6 +11,7 @@ SCHEMA_ORG_HOST = "schema.org"
 SCHEMA_NAMES = ["Recipe", "WebPage"]
 
 SYNTAXES = ["json-ld", "microdata"]
+NONE_NODE = object()
 
 
 class SchemaOrg:
@@ -113,7 +114,12 @@ class SchemaOrg:
         ]
 
     def nutrients(self):
-        nutrients = self.data.get("nutrition", {})
+        # Occasionally, None gets stored under the 'nutrients' key,
+        # and dict.get faithfully returns that None instead of the get default,
+        # because it is a valid key-value pair. By default=None we ensure
+        # nutrients will be set to {}.
+        nutrients = self.data.get("nutrition", None)
+        nutrients = nutrients if nutrients is not None else {}
 
         # Some recipes contain null or numbers which breaks normalize_string()
         # We'll ignore null and convert numbers to a string, like Schema validator does

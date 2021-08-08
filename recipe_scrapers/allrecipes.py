@@ -2,7 +2,8 @@ import inspect
 import logging
 import multiprocessing.dummy as mp
 import re
-from typing import AnyStr, Callable, Iterator
+import time
+from typing import Callable, Iterator
 
 import numpy as np
 import requests
@@ -37,6 +38,8 @@ DICT_FIELDS = [
 
 
 class AllRecipes(AbstractScraper):
+    URI_FORMAT = "https://www.allrecipes.com/recipe/%d"
+
     @classmethod
     def host(cls):
         return "allrecipes.com"
@@ -74,37 +77,51 @@ class AllRecipes(AbstractScraper):
         return self.schema.instructions()
 
     def ratings(self):
-        return self.schema.ratings()
+        try:
+            return self.schema.ratings()
+        except Exception:
+            return None
 
     def nutrients(self):
         def unhandled(n):
-            logger.warn(f"Unhandled AllRecipes extended nutrient format: {n}")
+            logger.warn("Unhandled AllRecipes extended nutrient format: %d", n)
+
+        base_nutr = self.schema.nutrients()
 
         # Find extended nutrients
         ext_nutrs = {}
-        for node in self.soup.select(EXT_NUTRS_SEL):
-            tupl = list(node.stripped_strings)
-            if len(tupl) >= 2:
-                name = tupl[0].strip(":")
-                ext_nutrs[name] = tupl[1]
-                if len(tupl) == 3:
-                    if "%" in tupl[2]:
-                        ext_nutrs[name + "%"] = tupl[2].strip(" %")
-                    else:
-                        unhandled(node)
-            else:
-                unhandled(node)
+        try:
+            ext_nutr_nodes = self.soup.select(EXT_NUTRS_SEL)
+            for node in ext_nutr_nodes:
+                tupl = list(node.stripped_strings)
+                if len(tupl) >= 2:
+                    name = tupl[0].strip(":")
+                    ext_nutrs[name] = tupl[1]
+                    if len(tupl) == 3:
+                        if "%" in tupl[2]:
+                            ext_nutrs[name + "%"] = tupl[2].strip(" %")
+                        else:
+                            unhandled(node)
+                else:
+                    unhandled(node)
+
+        except BaseException as excep:
+            logger.warning(
+                "Unable to get extended nutrients from markup in "
+                "AllRecipes.nutrients() - %s - %s",
+                self.canonical_url(),
+                str(type(excep)),
+            )
 
         # Marry basic and extended nutrients, reporting name clashes
-        nutr = self.schema.nutrients()
         for name, value in ext_nutrs.items():
-            if name in nutr:
+            if name in base_nutr:
                 logger.warn(EXT_NUTRS_CLASH, name, value, ext_nutrs[name])
-                nutr[f"Ext {name}"] = value
+                base_nutr[f"Ext {name}"] = value
             else:
-                nutr[name] = value
+                base_nutr[name] = value
 
-        return nutr
+        return base_nutr
 
     def nutrients_unitized(self):
         unitized = {}
@@ -126,39 +143,82 @@ class AllRecipes(AbstractScraper):
             unitized[name] = (float(new_value[0]), new_value[1])
         return unitized
 
-    def to_dict(self, html=False, unitized=False, skip_attribs=None):
+    def to_dict(
+        self, html=False, links=False, unitized=False, skip_attribs=None, uri=None
+    ):
+        NON_CONDITIONAL_FIELDS = {
+            "author": self.schema.author,
+            "canonical_url": self.canonical_url,
+            "image": self.schema.image,
+            "ingredients": self.schema.ingredients,
+            "instructions": self.schema.instructions,
+            "language": self.schema.language,
+            "ratings": self.ratings,
+            "site_name": self.site_name,
+            "title": self.schema.title,
+            "total_time": self.schema.total_time,
+            "yields": self.schema.yields,
+        }
         obj = {}
-        for attrib_name in DICT_FIELDS:
-            if skip_attribs and attrib_name in skip_attribs:
-                continue
+        for field, method in NON_CONDITIONAL_FIELDS.items():
             try:
-                attrib = getattr(self.__class__, attrib_name, None)
-                if attrib:
-                    if inspect.isfunction(attrib) or inspect.ismethod(attrib):
-                        obj[attrib_name] = attrib(self)
-                    else:
-                        obj[attrib_name] = attrib
-                else:
-                    logger.warn("Expected attrib not found: %s", attrib_name)
-            except Exception as excep:
+                obj[field] = method()
+            except BaseException as excep:
                 logger.warning(
-                    "Unable to fetch attribute '%s' from %s (%s)",
-                    attrib_name,
-                    self.canonical_url(),
-                    excep.message,
+                    "Failed to get field %s on %s " "because: %s",
+                    field,
+                    uri,
+                    str(excep)[:255],
                 )
-                # logger.warning("Unable to fetch attribute '%s' "
-                #                "from %s (%s", attrib_name,
-                #                self.canonical_url(), excep.message)
         if html:
             obj["html"] = str(self.soup)
+        if links:
+            obj["links"] = self.links()
         if unitized:
             obj["nutrients"] = self.nutrients_unitized()
         else:
             obj["nutrients"] = self.nutrients()
         return obj
 
-    URI_FORMAT = "https://www.allrecipes.com/recipe/%d"
+    def _old_to_dict(self, html=False, unitized=False, skip_attribs=None, uri=None):
+        obj = {}
+        try:
+            for attrib_name in DICT_FIELDS:
+                if skip_attribs and attrib_name in skip_attribs:
+                    continue
+                # attrib = getattr(self.__class__, attrib_name, None)
+                attrib = getattr(self, attrib_name, None)
+                if attrib:
+                    if inspect.isfunction(attrib) or inspect.ismethod(attrib):
+                        # obj[attrib_name] = self[attrib]()
+                        try:
+                            obj[attrib_name] = attrib()
+                        except BaseException as attribExcep:
+                            obj[attrib_name] = attrib()
+                            logger.warning(
+                                "Couldn't get method attrib '%s'", attrib_name
+                            )
+                            logger.warning("Couldn't get method attrib '%s'", uri)
+                            logger.warning(
+                                "Couldn't get method attrib " "'%s'",
+                                str(attribExcep)[:255],
+                            )
+                    else:
+                        obj[attrib_name] = attrib
+                else:
+                    logger.warn("Expected attrib not found: %s", attrib_name)
+            if html:
+                obj["html"] = str(self.soup)
+            if unitized:
+                obj["nutrients"] = self.nutrients_unitized()
+            else:
+                obj["nutrients"] = self.nutrients()
+        except Exception as serialExcep:
+            logger.error(
+                "Couldn't serialize recipe (%s): %s", uri, str(serialExcep)[:255]
+            )
+        finally:
+            return obj
 
     @classmethod
     def does_recipe_exist(
@@ -171,11 +231,11 @@ class AllRecipes(AbstractScraper):
         return head_response.status_code == 301
 
     @classmethod
-    def site_url_generator(
-        cls: AbstractScraper,
-        exclude_recipe: Callable[[int, AnyStr], bool] = None,
-        check_recipe_threads: int = 4,
-    ) -> Iterator[AnyStr]:
+    def site_urls(
+        cls,
+        should_exclude_recipe: Callable[[Url, int], bool] = None,
+        recipe_check_threads: int = 4,
+    ) -> Iterator[Url]:
         def recipe_id_to_permalink(recipe_id: int):
             """
             recipe_id: int - allrecipes.com's public-facing ID
@@ -184,19 +244,21 @@ class AllRecipes(AbstractScraper):
             try:
                 # Does caller want to exclude this recipe, for whatever reason?
                 uri = cls.URI_FORMAT % recipe_id
-                if exclude_recipe and exclude_recipe(recipe_id, uri):
+                if should_exclude_recipe and should_exclude_recipe(uri):
+                    logger.warn("Skipping %s", uri)
                     return None
 
                 # Is this recipe fetchable?
+                logger.warning("HEAD %s", uri)
                 head_resp = requests.head(uri)
                 if cls.does_recipe_exist(uri, head_resp):
                     redir_path = head_resp.headers.get("Location")
                     url = parse_url(uri)
                     permalink = Url(scheme=url.scheme, host=url.host, path=redir_path)
-                    print(f"HEAD yes: {uri} to {permalink}")
+                    # print(f"HEAD yes: {uri} to {permalink}")
                     return permalink
-                else:
-                    print(f"HEAD NO: {head_resp.status_code} - {uri}")
+                # else:
+                #     print(f"HEAD NO: {head_resp.status_code} - {uri}")
             except Exception as xxx:
                 print(xxx)
             return None
@@ -204,18 +266,20 @@ class AllRecipes(AbstractScraper):
         # AllRecipes.com's recipe IDs exist in a sparse matrix. We check HEAD
         # to see whether a given ID exists. If true, we yield the permalink.
         # If false, we yield None.
-        recipe_ids = np.arange(6500, 300000)
+        # recipe_ids = np.arange(8800, 300000)
+        recipe_ids = np.arange(6662, 300000)
         # recipe_ids = np.arange(6600, 6700)
-        np.random.shuffle(recipe_ids)
-        with mp.Pool(check_recipe_threads) as p:
+        # np.random.shuffle(recipe_ids)
+        with mp.Pool(recipe_check_threads) as p:
             # Run all recipe IDs X check_recipe()
             permalink_gen = p.imap_unordered(recipe_id_to_permalink, recipe_ids)
 
             try:
                 while True:
                     permalink = next(permalink_gen)
-                    print("permalink ", permalink)
+                    # print("permalink ", permalink)
                     if permalink is not None:
                         yield permalink
+                        time.sleep(0)
             except StopIteration:
                 return
