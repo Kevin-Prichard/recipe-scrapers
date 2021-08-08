@@ -7,6 +7,8 @@ from typing import Callable, Iterator
 
 import numpy as np
 import requests
+
+# from requests import Session
 from requests.packages.urllib3.response import HTTPResponse
 from requests.packages.urllib3.util import Url, parse_url
 
@@ -222,20 +224,31 @@ class AllRecipes(AbstractScraper):
 
     @classmethod
     def does_recipe_exist(
-        cls: AbstractScraper, uri: str, head_response: HTTPResponse = None
+        cls: AbstractScraper,
+        uri: str,
+        # requests_session: Session,
+        head_response: HTTPResponse = None,
     ):
         if head_response is None:
             head_response = requests.head(uri)
         # For existing recipes, AllRecipes.com 301 redirects to complete uri
         # Otherwise it returns 404
+        # print(head_response.status_code, head_response.url)
         return head_response.status_code == 301
 
     @classmethod
     def site_urls(
         cls,
+        # requests_session: Session,
         should_exclude_recipe: Callable[[Url, int], bool] = None,
         recipe_check_threads: int = 4,
     ) -> Iterator[Url]:
+        """
+        This generator yields intrinsic or discoverable URLs for a site,
+        which could be produced by a numeric range, or some other deterministic
+        process but external process.
+        """
+
         def recipe_id_to_permalink(recipe_id: int):
             """
             recipe_id: int - allrecipes.com's public-facing ID
@@ -249,13 +262,14 @@ class AllRecipes(AbstractScraper):
                     return None
 
                 # Is this recipe fetchable?
-                logger.warning("HEAD %s", uri)
+                # logger.warning("HEAD %s", uri)
                 head_resp = requests.head(uri)
+                # head_resp = requests_session.head(uri, allow_redirects=True)
                 if cls.does_recipe_exist(uri, head_resp):
                     redir_path = head_resp.headers.get("Location")
                     url = parse_url(uri)
                     permalink = Url(scheme=url.scheme, host=url.host, path=redir_path)
-                    # print(f"HEAD yes: {uri} to {permalink}")
+                    print(f"HEAD yes: {uri} to {permalink}")
                     return permalink
                 # else:
                 #     print(f"HEAD NO: {head_resp.status_code} - {uri}")
@@ -267,7 +281,8 @@ class AllRecipes(AbstractScraper):
         # to see whether a given ID exists. If true, we yield the permalink.
         # If false, we yield None.
         # recipe_ids = np.arange(8800, 300000)
-        recipe_ids = np.arange(6662, 300000)
+        # recipe_ids = np.arange(6662, 300000)
+        recipe_ids = np.arange(6662, 10000)
         # recipe_ids = np.arange(6600, 6700)
         # np.random.shuffle(recipe_ids)
         with mp.Pool(recipe_check_threads) as p:

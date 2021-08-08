@@ -5,6 +5,8 @@ from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+
+# from requests import Session
 from requests.packages.urllib3.response import HTTPResponse
 from requests.packages.urllib3.util import Url
 
@@ -140,14 +142,19 @@ class AbstractScraper:
     URI_FORMAT = None
 
     @classmethod
-    def does_recipe_exist(cls, uri: str, head_response: HTTPResponse = None):
+    def does_recipe_exist(
+        cls,
+        uri: str,
+        # requests_session: Session,
+        head_response: HTTPResponse = None,
+    ):
         raise NotImplementedError("This should be implemented.")
 
     @classmethod
     def site_urls(
         cls,
+        # requests_session: Session,
         should_exclude_recipe: Callable[[Url, int], bool] = None,
         recipe_check_threads: int = 4,
     ) -> Iterator[Url]:
-
         raise NotImplementedError("This should be implemented.")
