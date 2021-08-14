@@ -1,13 +1,10 @@
 import inspect
 from collections import OrderedDict
-from typing import Callable, Iterator, Optional, Tuple, Union
+from typing import AnyStr, Callable, Iterator, Optional, Tuple, Union
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
-
-# from requests import Session
-from requests.packages.urllib3.response import HTTPResponse
 from requests.packages.urllib3.util import Url
 
 from recipe_scrapers.settings import settings
@@ -142,19 +139,12 @@ class AbstractScraper:
     URI_FORMAT = None
 
     @classmethod
-    def does_recipe_exist(
-        cls,
-        uri: str,
-        # requests_session: Session,
-        head_response: HTTPResponse = None,
-    ):
-        raise NotImplementedError("This should be implemented.")
-
-    @classmethod
     def site_urls(
-        cls,
-        # requests_session: Session,
-        should_exclude_recipe: Callable[[Url, int], bool] = None,
-        recipe_check_threads: int = 4,
+        cls: "AbstractScraper",
+        recipe_check_fn: Callable[[Url, Union[AnyStr, int]], bool] = None,
+        threadcount: int = 4,
+        max_failed_probes: int = 250,
+        lower_recipe_id: int = 6663,
+        upper_recipe_id: int = 300000,
     ) -> Iterator[Url]:
         raise NotImplementedError("This should be implemented.")

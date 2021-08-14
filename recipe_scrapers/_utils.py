@@ -1,5 +1,7 @@
 import html
 import re
+from collections import defaultdict
+from threading import Lock
 
 from ._exceptions import ElementNotFoundInHtml
 
@@ -114,3 +116,100 @@ def url_path_to_dict(path):
 
 def get_host_name(url):
     return url_path_to_dict(url.replace("://www.", "://"))["host"]
+
+
+class StatusCodeLimiter:
+    """
+    While crawling a recipe website, how do you know when you've reached the
+    end of a website's ID-based URL range?
+
+    Some websites have consecutive ID-based URLs-soon as you hit a 404
+    you're done. But, some have sparse numbering, so skipping a few doesn't
+    mean you've passed the last recipe ID. It might take 40 or 100 or 200
+    before you're really sure.
+
+    So: feed this class each HTTP response status code from every URL your
+    crawler attempts, and when it hits your preset limit of consecutive 404s
+    (or whatever code you prefer), it raises StopIteration.
+
+    It also counts all status codes received, to provide a simple frequency
+    of all status codes (helpful when first crawling as site).
+
+    Example:
+        my_logger = logging.getLogger(__name__)
+        code_limiter = StatusCodeLimiter(404, 50, my_logger)
+
+        try:
+            for recipe_id = range(10000, 15000):
+                resp = requests.head(f"https://greatestrecipes.com/{recipe_id}")
+                code_limiter.add(resp.status_code)
+        except StopIteration:
+            # done with crawl
+            ...
+    """
+
+    def __init__(self, watch_status_code: int, max_consecutive_count: int, logger=None):
+        """
+        watch_status_code:int - a HTTP status code to monitor for a streak
+        max_consecutive_count:int - the maximum of watch_stats_code allowed
+                                  before raising StopIteration
+        logger:logging.Logger - a logger instance to which the count of all
+                              status codes will be written as a one-line
+                              "report"
+        """
+        self._watch_status_code = watch_status_code
+        self._max_consecutive_count = max_consecutive_count
+        self._logger = logger
+        self._thread_lock = Lock()
+
+        # Remember the last code so we'll know if a streak was broken
+        self.last_status_code = None
+
+        # Counter for watch_status_code
+        self.consecutive_code_count = 0
+
+        # Count all codes, it has been helpful
+        self.all_codes = defaultdict(int)
+
+    def add(self, code: int):
+        """
+        code:int - an HTTP response code
+        """
+        try:
+            # Allow only one thread to increment a var at a time
+            self._thread_lock.acquire()
+
+            # Is this the code we're watching for?
+            if code == self._watch_status_code:
+                if self.last_status_code == self._watch_status_code:
+                    # Streak is continuing
+                    self.consecutive_code_count += 1
+                else:
+                    # First instance of watch_status_code
+                    self.consecutive_code_count = 1
+
+                # If we received more than allowed consecutive
+                # watch_status_code, signal to caller that the crawl is finished
+                if self.consecutive_code_count >= self._max_consecutive_count:
+                    # Log the count of all status codes if that was requested
+                    if self._logger:
+                        self._logger.info(
+                            "End of crawl HTTP status code counts: "
+                            + self.status_codes_report()
+                        )
+                    raise StopIteration(
+                        f"Consecutive 404 count reached: {self._max_consecutive_count}"
+                    )
+            else:
+                # Reset the counter if code != watch_status_code
+                self.consecutive_code_count = 0
+
+            self.last_status_code = code
+            self.all_codes[code] += 1
+        finally:
+            self._thread_lock.release()
+
+    def status_codes_report(self, delimiter: str = ", "):
+        return delimiter.join(
+            f"{code}={count}" for code, count in self.all_codes.items()
+        )

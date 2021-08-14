@@ -3,7 +3,7 @@ import logging
 import multiprocessing.dummy as mp
 import re
 import time
-from typing import Callable, Iterator
+from typing import AnyStr, Callable, Iterator, Union
 
 import numpy as np
 import requests
@@ -11,6 +11,8 @@ import requests
 # from requests import Session
 from requests.packages.urllib3.response import HTTPResponse
 from requests.packages.urllib3.util import Url, parse_url
+
+from recipe_scrapers._utils import StatusCodeLimiter
 
 from ._abstract import AbstractScraper
 
@@ -247,12 +249,9 @@ class AllRecipes(AbstractScraper):
             return obj
 
     @classmethod
-    def does_recipe_exist(
-        cls: AbstractScraper,
-        uri: str,
-        # requests_session: Session,
-        head_response: HTTPResponse = None,
-    ):
+    def _does_recipe_exist(
+        cls: AbstractScraper, uri: str, head_response: HTTPResponse = None
+    ) -> bool:
         if head_response is None:
             head_response = requests.head(uri)
         # For existing recipes, AllRecipes.com 301 redirects to complete uri
@@ -262,63 +261,74 @@ class AllRecipes(AbstractScraper):
 
     @classmethod
     def site_urls(
-        cls,
-        # requests_session: Session,
-        should_exclude_recipe: Callable[[Url, int], bool] = None,
-        recipe_check_threads: int = 4,
+        cls: "AbstractScraper",
+        recipe_check_fn: Callable[[Url, Union[AnyStr, int]], bool] = None,
+        threadcount: int = 4,
+        max_failed_probes: int = 250,
+        lower_recipe_id: int = 6663,
+        upper_recipe_id: int = 300000,
     ) -> Iterator[Url]:
         """
-        This generator yields intrinsic or discoverable URLs for a site,
-        which could be produced by a numeric range, or some other deterministic
-        process but external process.
+        This generator yields discoverable URLs for allrecipes.com,
+        which exist within a known numeric range. The upper end is higher than
+        when this author last checked, headroom to continue probing, but the
+        probes will be terminated after MAX_FAILED_PROBES 404s
         """
 
-        def recipe_id_to_permalink(recipe_id: int):
+        code_limiter = StatusCodeLimiter(max_failed_probes)
+
+        def get_permalink(recipe_id: int):
             """
             recipe_id: int - allrecipes.com's public-facing ID
             returns: urllib3.util.Url of existing recipes that can be GET
             """
             try:
-                # Does caller want to exclude this recipe, for whatever reason?
+                # Does caller want to exclude this recipe, whatever the reason?
                 uri = cls.URI_FORMAT % recipe_id
-                if should_exclude_recipe and should_exclude_recipe(uri):
-                    logger.warn("Skipping %s", uri)
+                if recipe_check_fn and recipe_check_fn(uri, recipe_id):
+                    print(f"Skipping {uri}")
                     return None
 
                 # Is this recipe fetchable?
-                # logger.warning("HEAD %s", uri)
                 head_resp = requests.head(uri)
-                # head_resp = requests_session.head(uri, allow_redirects=True)
-                if cls.does_recipe_exist(uri, head_resp):
+                if cls.recipe_exists(uri, head_resp):
                     redir_path = head_resp.headers.get("Location")
                     url = parse_url(uri)
                     permalink = Url(scheme=url.scheme, host=url.host, path=redir_path)
-                    logger.info(f"HEAD yes: {uri} to {permalink}")
                     return permalink
-                # else:
-                #     print(f"HEAD NO: {head_resp.status_code} - {uri}")
+                else:
+                    # Keep track of how many consecutive 404s we receive
+                    code_limiter.add(head_resp.status_code)
+                    get_permalink.counter = getattr(get_permalink, "counter", 0) + 1
+
+                    if get_permalink.request_count / 25 == int(
+                        get_permalink.request_count / 25
+                    ):
+                        logger.debug("Requests so far: " + get_permalink.request_count)
+
             except Exception as xxx:
-                logger.error("Exception in recipe_id_to_permalink: %s", xxx)
+                logger.error("Exception in get_permalink: %s", xxx)
             return None
 
-        # AllRecipes.com's recipe IDs exist in a sparse matrix. We check HEAD
-        # to see whether a given ID exists. If true, we yield the permalink.
-        # If false, we yield None.
-        # recipe_ids = np.arange(8800, 300000)
-        recipe_ids = np.arange(17500, 300000)
-        # recipe_ids = np.arange(6662, 10000)
-        # recipe_ids = np.arange(6600, 6700)
-        # np.random.shuffle(recipe_ids)
-        with mp.Pool(recipe_check_threads) as p:
-            # Run all recipe IDs X check_recipe()
-            permalink_gen = p.imap_unordered(recipe_id_to_permalink, recipe_ids)
+        def recipe_id_generator() -> Iterator[Url]:
+            """
+            AllRecipes.com's recipe IDs exist in a sparse matrix. We check HEAD
+            to see whether a given ID exists. If true, we yield the permalink.
+            If false, we yield None."""
+            get_permalink.request_count: int = 0
 
-            try:
-                while True:
-                    permalink = next(permalink_gen)
-                    # print("permalink ", permalink)
-                    if permalink is not None:
-                        yield permalink
-                        time.sleep(0)
-            except StopIteration:
-                return
+            recipe_ids = np.arange(lower_recipe_id, upper_recipe_id)
+            with mp.Pool(threadcount) as p:
+                # Run all recipe IDs X check_recipe()
+                permalink_gen = p.imap_unordered(get_permalink, recipe_ids)
+
+                try:
+                    while True:
+                        permalink = next(permalink_gen)
+                        if permalink is not None:
+                            yield permalink
+                            time.sleep(0)
+                except StopIteration:
+                    return
+
+        return recipe_id_generator()
