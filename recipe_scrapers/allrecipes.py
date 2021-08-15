@@ -274,7 +274,6 @@ class AllRecipes(AbstractScraper):
         when this author last checked, headroom to continue probing, but the
         probes will be terminated after MAX_FAILED_PROBES 404s
         """
-
         code_limiter = StatusCodeLimiter(max_failed_probes)
 
         def get_permalink(recipe_id: int):
@@ -282,6 +281,7 @@ class AllRecipes(AbstractScraper):
             recipe_id: int - allrecipes.com's public-facing ID
             returns: urllib3.util.Url of existing recipes that can be GET
             """
+            fn = get_permalink
             try:
                 # Does caller want to exclude this recipe, whatever the reason?
                 uri = cls.URI_FORMAT % recipe_id
@@ -299,12 +299,10 @@ class AllRecipes(AbstractScraper):
                 else:
                     # Keep track of how many consecutive 404s we receive
                     code_limiter.add(head_resp.status_code)
-                    get_permalink.counter = getattr(get_permalink, "counter", 0) + 1
+                    fn.counter = getattr(fn, "counter", 0) + 1
 
-                    if get_permalink.request_count / 25 == int(
-                        get_permalink.request_count / 25
-                    ):
-                        logger.debug("Requests so far: " + get_permalink.request_count)
+                    if fn.request_count / 25 == int(fn.request_count / 25):
+                        logger.debug("Requests so far: " + fn.request_count)
 
             except Exception as xxx:
                 logger.error("Exception in get_permalink: %s", xxx)
