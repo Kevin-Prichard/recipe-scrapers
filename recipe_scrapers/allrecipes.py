@@ -1,14 +1,10 @@
-import inspect
 import logging
 import multiprocessing.dummy as mp
 import re
 import time
 from typing import AnyStr, Callable, Iterator, Union
 
-import numpy as np
 import requests
-
-# from requests import Session
 from requests.packages.urllib3.response import HTTPResponse
 from requests.packages.urllib3.util import Url, parse_url
 
@@ -16,7 +12,6 @@ from recipe_scrapers._utils import StatusCodeLimiter
 
 from ._abstract import AbstractScraper
 
-# https://stackoverflow.com/questions/13733552/logger-configuration-to-log-to-file-and-print-to-stdout
 logger = logging.getLogger()
 
 UNITIZERX = re.compile(r"^([0-9.]+)\s*([^0-9.]*)$")
@@ -169,9 +164,13 @@ class AllRecipes(AbstractScraper):
         return unitized
 
     def to_dict(
-        self, html=False, links=False, unitized=False, skip_attribs=None, uri=None
+        self, soup=False, links=False, unitized=False, skip_attribs=None, uri=None
     ):
-        NON_CONDITIONAL_FIELDS = {
+        """
+        Pretty much any pseudo-attribute can throw an exception for a variety
+        of reasons, so... every access to every field is armored by try/except.
+        """
+        non_conditional_fields = {
             "author": self.schema.author,
             "canonical_url": self.canonical_url,
             "image": self.schema.image,
@@ -185,7 +184,7 @@ class AllRecipes(AbstractScraper):
             "yields": self.schema.yields,
         }
         obj = {}
-        for field, method in NON_CONDITIONAL_FIELDS.items():
+        for field, method in non_conditional_fields.items():
             try:
                 obj[field] = method()
             except BaseException as excep:
@@ -195,58 +194,27 @@ class AllRecipes(AbstractScraper):
                     uri,
                     str(excep)[:255],
                 )
-        if html:
-            obj["html"] = str(self.soup)
-        if links:
-            try:
-                obj["links"] = self.links()
-            except Exception as eelinks:
-                logger.warning("Couldn't obtain links(): %s", str(eelinks))
-        if unitized:
-            obj["nutrients"] = self.nutrients_unitized()
-        else:
-            obj["nutrients"] = self.nutrients()
-        return obj
 
-    def _old_to_dict(self, html=False, unitized=False, skip_attribs=None, uri=None):
-        obj = {}
-        try:
-            for attrib_name in DICT_FIELDS:
-                if skip_attribs and attrib_name in skip_attribs:
-                    continue
-                # attrib = getattr(self.__class__, attrib_name, None)
-                attrib = getattr(self, attrib_name, None)
-                if attrib:
-                    if inspect.isfunction(attrib) or inspect.ismethod(attrib):
-                        # obj[attrib_name] = self[attrib]()
-                        try:
-                            obj[attrib_name] = attrib()
-                        except BaseException as attribExcep:
-                            obj[attrib_name] = attrib()
-                            logger.warning(
-                                "Couldn't get method attrib '%s'", attrib_name
-                            )
-                            logger.warning("Couldn't get method attrib '%s'", uri)
-                            logger.warning(
-                                "Couldn't get method attrib " "'%s'",
-                                str(attribExcep)[:255],
-                            )
-                    else:
-                        obj[attrib_name] = attrib
-                else:
-                    logger.warn("Expected attrib not found: %s", attrib_name)
-            if html:
-                obj["html"] = str(self.soup)
-            if unitized:
-                obj["nutrients"] = self.nutrients_unitized()
-            else:
-                obj["nutrients"] = self.nutrients()
-        except Exception as serialExcep:
-            logger.error(
-                "Couldn't serialize recipe (%s): %s", uri, str(serialExcep)[:255]
-            )
-        finally:
-            return obj
+        conditional_fields = {
+            "soup": lambda: str(self.soup),  # I know, I know
+            "links": self.links,
+            "nutrients_unitized": self.nutrients_unitized,
+            "nutrients": self.nutrients,
+        }
+
+        for field, method in conditional_fields.items():
+            if field in locals() and locals()[field]:
+                try:
+                    obj[field] = method()
+                except BaseException as excep:
+                    logger.warning(
+                        "Failed to get field %s on %s because: %s",
+                        field,
+                        uri,
+                        str(excep)[:255],
+                    )
+
+        return obj
 
     @classmethod
     def _does_recipe_exist(
@@ -260,8 +228,8 @@ class AllRecipes(AbstractScraper):
         return head_response.status_code == 301
 
     @classmethod
-    def site_urls(
-        cls: "AbstractScraper",
+    def sitemap_iter(
+        cls: AbstractScraper,
         recipe_check_fn: Callable[[Url, Union[AnyStr, int]], bool] = None,
         threadcount: int = 4,
         max_failed_probes: int = 250,
@@ -274,14 +242,14 @@ class AllRecipes(AbstractScraper):
         when this author last checked, headroom to continue probing, but the
         probes will be terminated after MAX_FAILED_PROBES 404s
         """
-        code_limiter = StatusCodeLimiter(max_failed_probes)
+        code_limiter = StatusCodeLimiter(404, max_failed_probes, logger)
 
-        def get_permalink(recipe_id: int):
+        def recipe_id_to_permalink(recipe_id: int):
             """
             recipe_id: int - allrecipes.com's public-facing ID
             returns: urllib3.util.Url of existing recipes that can be GET
             """
-            fn = get_permalink
+            fn = recipe_id_to_permalink
             try:
                 # Does caller want to exclude this recipe, whatever the reason?
                 uri = cls.URI_FORMAT % recipe_id
@@ -305,7 +273,7 @@ class AllRecipes(AbstractScraper):
                         logger.debug("Requests so far: " + fn.request_count)
 
             except Exception as xxx:
-                logger.error("Exception in get_permalink: %s", xxx)
+                logger.error("Exception in recipe_id_to_permalink: %s", xxx)
             return None
 
         def recipe_id_generator() -> Iterator[Url]:
@@ -313,12 +281,12 @@ class AllRecipes(AbstractScraper):
             AllRecipes.com's recipe IDs exist in a sparse matrix. We check HEAD
             to see whether a given ID exists. If true, we yield the permalink.
             If false, we yield None."""
-            get_permalink.request_count: int = 0
+            recipe_id_to_permalink.request_count: int = 0
 
-            recipe_ids = np.arange(lower_recipe_id, upper_recipe_id)
+            recipe_ids = range(lower_recipe_id, upper_recipe_id)
             with mp.Pool(threadcount) as p:
                 # Run all recipe IDs X check_recipe()
-                permalink_gen = p.imap_unordered(get_permalink, recipe_ids)
+                permalink_gen = p.imap_unordered(recipe_id_to_permalink, recipe_ids)
 
                 try:
                     while True:

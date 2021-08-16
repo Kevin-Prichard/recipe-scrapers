@@ -139,7 +139,7 @@ class AbstractScraper:
     URI_FORMAT = None
 
     @classmethod
-    def site_urls(
+    def sitemap_iter(
         cls: "AbstractScraper",
         recipe_check_fn: Callable[[Url, Union[AnyStr, int]], bool] = None,
         threadcount: int = 4,
