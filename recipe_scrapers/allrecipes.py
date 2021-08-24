@@ -234,7 +234,8 @@ class AllRecipes(AbstractScraper):
         threadcount: int = 4,
         max_failed_probes: int = 250,
         lower_recipe_id: int = 6663,
-        upper_recipe_id: int = 300000,
+        upper_recipe_id: int = 6670,
+        # upper_recipe_id: int = 300000,
     ) -> Iterator[Url]:
         """
         This generator yields discoverable URLs for allrecipes.com,
@@ -244,7 +245,7 @@ class AllRecipes(AbstractScraper):
         """
         code_limiter = StatusCodeLimiter(404, max_failed_probes, logger)
 
-        def recipe_id_to_permalink(recipe_id: int):
+        def recipe_id_to_permalink(recipe_id: int, **args):
             """
             recipe_id: int - allrecipes.com's public-facing ID
             returns: urllib3.util.Url of existing recipes that can be GET
@@ -259,7 +260,7 @@ class AllRecipes(AbstractScraper):
 
                 # Is this recipe fetchable?
                 head_resp = requests.head(uri)
-                if cls.recipe_exists(uri, head_resp):
+                if cls._does_recipe_exist(uri, head_resp):
                     redir_path = head_resp.headers.get("Location")
                     url = parse_url(uri)
                     permalink = Url(scheme=url.scheme, host=url.host, path=redir_path)
@@ -286,7 +287,9 @@ class AllRecipes(AbstractScraper):
             recipe_ids = range(lower_recipe_id, upper_recipe_id)
             with mp.Pool(threadcount) as p:
                 # Run all recipe IDs X check_recipe()
-                permalink_gen = p.imap_unordered(recipe_id_to_permalink, recipe_ids)
+                permalink_gen = p.imap_unordered(
+                    recipe_id_to_permalink, iter(recipe_ids)
+                )
 
                 try:
                     while True:
